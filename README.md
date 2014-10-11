@@ -10,11 +10,11 @@ the [DOMDocument class](http://php.net/manual/en/class.domdocument.php), we can 
 
 ```php
   	foreach ($this->dom->getElementsByTagName('*') as $node)
-	       $toc[] = $node->getNodePath();
+	     print $node->getNodePath();
 ``` 
 
 and compare trees of two similar XMLs using *PHP-FineDiff*.
 
-The project use this principio to produce tidy layout and navigation for XML comparisons.
+The project use this principle to produce tidy layout and navigation for XML comparisons.
 
 
