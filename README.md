@@ -2,7 +2,8 @@ PHP-XmlDiff
 ===========
 
 An adaption of [PHP-FineDiff](https://github.com/gorhill/PHP-FineDiff) for XML comparisons.
-See [motivation](http://stackoverflow.com/q/26160675/287948).
+
+See [demo](http://www.xmlfusion.org/demo/PHP-XmlDiff/) and [motivation](http://stackoverflow.com/q/26160675/287948).
 
 ## Synopsis ##
 With PHP's [DOM](http://www.w3.org/DOM) implementation, 
