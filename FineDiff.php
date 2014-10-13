@@ -5,6 +5,10 @@
 * Computes a set of instructions to convert the content of
 * one string into another.
 *
+* Copyright (c) 2014-10-12 adaptations (see $num_changes and diffToArray()).
+* Copyright (c) 2014-10-11 corrections: https://github.com/ppKrauss/PHP-XmlDiff
+*   for corrections over https://github.com/gorhill/PHP-FineDiff/pulls
+*   see also requested issues for mulibyte (UTF8 safe!).
 * Copy 2014-10-10 from https://github.com/gorhill/PHP-FineDiff/blob/master/finediff.php
 * Copyright (c) 2011 Raymond Hill (http://raymondhill.net/blog/?p=441)
 *
@@ -29,7 +33,7 @@
 * THE SOFTWARE.
 *
 * @copyright Copyright 2011 (c) Raymond Hill (http://raymondhill.net/blog/?p=441)
-* @version 0.6
+* @version 0.7 (adaptaed from 0.6)
 * @license MIT License (http://www.opensource.org/licenses/mit-license.php)
 */
 
@@ -107,13 +111,13 @@ class FineDiffInsertOp extends FineDiffOp {
 		return 0;
 		}
 	public function getToLen() {
-		return strlen($this->text);
+		return mb_strlen($this->text);
 		}
 	public function getText() {
 		return $this->text;
 		}
 	public function getOpcode() {
-		$to_len = strlen($this->text);
+		$to_len = mb_strlen($this->text);
 		if ( $to_len === 1 ) {
 			return "i:{$this->text}";
 			}
@@ -130,7 +134,7 @@ class FineDiffReplaceOp extends FineDiffOp {
 		return $this->fromLen;
 		}
 	public function getToLen() {
-		return strlen($this->text);
+		return mb_strlen($this->text);
 		}
 	public function getText() {
 		return $this->text;
@@ -142,7 +146,7 @@ class FineDiffReplaceOp extends FineDiffOp {
 		else {
 			$del_opcode = "d{$this->fromLen}";
 			}
-		$to_len = strlen($this->text);
+		$to_len = mb_strlen($this->text);
 		if ( $to_len === 1 ) {
 			return "{$del_opcode}i:{$this->text}";
 			}
@@ -185,7 +189,7 @@ class FineDiffOps {
 			$edits[] = new FineDiffDeleteOp($from_len);
 			}
 		else /* if ( $opcode === 'i' ) */ {
-			$edits[] = new FineDiffInsertOp(substr($from, $from_offset, $from_len));
+			$edits[] = new FineDiffInsertOp(mb_substr($from, $from_offset, $from_len));
 			}
 		}
 	public $edits = array();
@@ -204,15 +208,17 @@ class FineDiff {
 	* Public section
 	*
 	*/
+	public $num_changes=NULL;  // new v0.7
 
 	/**
-	* Constructor
-	* ...
-	* The $granularityStack allows FineDiff to be configurable so that
-	* a particular stack tailored to the specific content of a document can
-	* be passed.
-	*/
+	 * Constructor
+	 * ...
+	 * The $granularityStack allows FineDiff to be configurable so that
+	 * a particular stack tailored to the specific content of a document can
+	 * be passed.
+	 */
 	public function __construct($from_text = '', $to_text = '', $granularityStack = null) {
+		mb_internal_encoding("UTF-8");
 		// setup stack for generic text documents by default
 		$this->granularityStack = $granularityStack ? $granularityStack : FineDiff::$characterGranularity;
 		$this->edits = array();
@@ -232,8 +238,60 @@ class FineDiff {
 		return implode('', $opcodes);
 		}
 
+
+	/**
+	 * diffToArray, mount array from edits.
+	 * @param $splitBlock boolean (FALSE), true for split string into many items.
+	 * @param $useTrim boolean (TRUE), true for trim lines.
+	 * @return array (commands 'cpy'/'del'/'ins', line) or ('rpl', line_del, line_ins)
+	 * NOTE: add in v0.7, 2014-10-10 by ppkrauss for XML
+	 */
+	public function diffToArray($splitBlock=false, $useTrim=true) {
+		$splitBlock=false; $useTrim=true; // constant parameters, no risk
+		$ret = array();
+		$in_offset = 0;
+		$nChanges = 0;
+		foreach ( $this->edits as $edit ) {
+			$n = $edit->getFromLen();
+			if ( $edit instanceof FineDiffCopyOp ) {
+				$s = mb_substr($this->from_text, $in_offset, $n);
+				$aux = array('cpy', trim($s));
+				}
+			else if ( $edit instanceof FineDiffDeleteOp ) {
+				$s = mb_substr($this->from_text, $in_offset, $n);
+				$aux = array('del', trim($s));
+				$nChanges++;
+				}
+			else if ( $edit instanceof FineDiffInsertOp ) {
+				$s = mb_substr($edit->getText(), 0, $edit->getToLen());
+				$aux = array('ins', trim($s));
+				$nChanges++;
+				}
+			else { //   $edit instanceof FineDiffReplaceOp 
+				$s_del = mb_substr($this->from_text, $in_offset, $n);
+				$s_ins = mb_substr($edit->getText(), 0, $edit->getToLen());
+				$aux = array('rpl', trim($s_del), trim($s_ins));
+				$nChanges++;	
+				}
+			if ($splitBlock) { // must review for aux[2]
+				$allLines = explode("\n",$aux[1]); // OPS, and about rpl's $aux[2]?
+				if (count($allLines)>1)
+					foreach($allLines as $line)
+						$ret[] = array("$aux[0]-blk",$line);
+				else
+					$ret[] = $aux;
+				}
+			else
+				$ret[] = $aux;
+			$in_offset += $n;
+			}
+		$this->num_changes = $nChanges;
+		return $ret;
+		}
+
 	public function renderDiffToHTML() {
 		$in_offset = 0;
+		$nChanges = 0;		
 		ob_start();
 		foreach ( $this->edits as $edit ) {
 			$n = $edit->getFromLen();
@@ -242,16 +300,20 @@ class FineDiff {
 				}
 			else if ( $edit instanceof FineDiffDeleteOp ) {
 				FineDiff::renderDiffToHTMLFromOpcode('d', $this->from_text, $in_offset, $n);
+				$nChanges++;				
 				}
 			else if ( $edit instanceof FineDiffInsertOp ) {
 				FineDiff::renderDiffToHTMLFromOpcode('i', $edit->getText(), 0, $edit->getToLen());
+				$nChanges++;				
 				}
 			else /* if ( $edit instanceof FineDiffReplaceOp ) */ {
 				FineDiff::renderDiffToHTMLFromOpcode('d', $this->from_text, $in_offset, $n);
 				FineDiff::renderDiffToHTMLFromOpcode('i', $edit->getText(), 0, $edit->getToLen());
+				$nChanges++;
 				}
 			$in_offset += $n;
 			}
+		$this->num_changes = $nChanges;	// new in v0.7
 		return ob_get_clean();
 		}
 
@@ -299,14 +361,14 @@ class FineDiff {
 		if ( !is_callable($callback) ) {
 			return;
 			}
-		$opcodes_len = strlen($opcodes);
+		$opcodes_len = mb_strlen($opcodes);
 		$from_offset = $opcodes_offset = 0;
 		while ( $opcodes_offset <  $opcodes_len ) {
-			$opcode = substr($opcodes, $opcodes_offset, 1);
+			$opcode = mb_substr($opcodes, $opcodes_offset, 1);
 			$opcodes_offset++;
-			$n = intval(substr($opcodes, $opcodes_offset));
+			$n = intval(mb_substr($opcodes, $opcodes_offset));
 			if ( $n ) {
-				$opcodes_offset += strlen(strval($n));
+				$opcodes_offset += mb_strlen(strval($n));
 				}
 			else {
 				$n = 1;
@@ -394,7 +456,7 @@ class FineDiff {
 			// increase granularity
 			if ( $fragment_edit instanceof FineDiffReplaceOp && $has_next_stage ) {
 				$this->_processGranularity(
-					substr($this->from_text, $this->from_offset, $fragment_edit->getFromLen()),
+					mb_substr($this->from_text, $this->from_offset, $fragment_edit->getFromLen()),
 					$fragment_edit->getText()
 					);
 				}
@@ -432,8 +494,8 @@ class FineDiff {
 		$result = array();
 
 		// fragment-level diffing
-		$from_text_len = strlen($from_text);
-		$to_text_len = strlen($to_text);
+		$from_text_len = mb_strlen($from_text);
+		$to_text_len = mb_strlen($to_text);
 		$from_fragments = FineDiff::extractFragments($from_text, $delimiters);
 		$to_fragments = FineDiff::extractFragments($to_text, $delimiters);
 
@@ -454,7 +516,7 @@ class FineDiff {
 					$result[$from_segment_start * 4] = new FineDiffDeleteOp($from_segment_length);
 					}
 				else if ( $to_segment_length ) {
-					$result[$from_segment_start * 4 + 1] = new FineDiffInsertOp(substr($to_text, $to_segment_start, $to_segment_length));
+					$result[$from_segment_start * 4 + 1] = new FineDiffInsertOp(mb_substr($to_text, $to_segment_start, $to_segment_length));
 					}
 				continue;
 				}
@@ -468,7 +530,7 @@ class FineDiff {
 
 			while ( $from_base_fragment_index < $from_segment_end ) {
 				$from_base_fragment = $from_fragments[$from_base_fragment_index];
-				$from_base_fragment_length = strlen($from_base_fragment);
+				$from_base_fragment_length = mb_strlen($from_base_fragment);
 				// performance boost: cache array keys
 				if ( !isset($cached_array_keys_for_current_segment[$from_base_fragment]) ) {
 					if ( !isset($cached_array_keys[$from_base_fragment]) ) {
@@ -510,7 +572,7 @@ class FineDiff {
 						if ( $from_fragments[$fragment_from_index] !== $to_fragments[$fragment_to_index] ) {
 							break;
 							}
-						$fragment_length = strlen($from_fragments[$fragment_from_index]);
+						$fragment_length = mb_strlen($from_fragments[$fragment_from_index]);
 						$fragment_index_offset += $fragment_length;
 						}
 					if ( $fragment_index_offset > $best_copy_length ) {
@@ -519,7 +581,7 @@ class FineDiff {
 						$best_to_start = $to_base_fragment_index;
 						}
 					}
-				$from_base_fragment_index += strlen($from_base_fragment);
+				$from_base_fragment_index += mb_strlen($from_base_fragment);
 				// If match is larger than half segment size, no point trying to find better
 				// TODO: Really?
 				if ( $best_copy_length >= $from_segment_length / 2) {
@@ -538,7 +600,7 @@ class FineDiff {
 				$jobs[] = array($best_from_start + $best_copy_length, $from_segment_end, $best_to_start + $best_copy_length, $to_segment_end);
 				}
 			else {
-				$result[$from_segment_start * 4 ] = new FineDiffReplaceOp($from_segment_length, substr($to_text, $to_segment_start, $to_segment_length));
+				$result[$from_segment_start * 4 ] = new FineDiffReplaceOp($from_segment_length, mb_substr($to_text, $to_segment_start, $to_segment_length));
 				}
 			}
 
@@ -550,7 +612,7 @@ class FineDiff {
 	* Perform a character-level diff.
 	*
 	* The algorithm is quite similar to doFragmentDiff(), except that
-	* the code path is optimized for character-level diff -- strpos() is
+	* the code path is optimized for character-level diff -- mb_strpos() is
 	* used to find out the longest common subequence of characters.
 	*
 	* We try to find a match using the longest possible subsequence, which
@@ -564,7 +626,7 @@ class FineDiff {
 	*/
 	private static function doCharDiff($from_text, $to_text) {
 		$result = array();
-		$jobs = array(array(0, strlen($from_text), 0, strlen($to_text)));
+		$jobs = array(array(0, mb_strlen($from_text), 0, mb_strlen($to_text)));
 		while ( $job = array_pop($jobs) ) {
 			// get the segments which must be diff'ed
 			list($from_segment_start, $from_segment_end, $to_segment_start, $to_segment_end) = $job;
@@ -577,7 +639,7 @@ class FineDiff {
 					$result[$from_segment_start * 4 + 0] = new FineDiffDeleteOp($from_segment_len);
 					}
 				else if ( $to_segment_len ) {
-					$result[$from_segment_start * 4 + 1] = new FineDiffInsertOp(substr($to_text, $to_segment_start, $to_segment_len));
+					$result[$from_segment_start * 4 + 1] = new FineDiffInsertOp(mb_substr($to_text, $to_segment_start, $to_segment_len));
 					}
 				continue;
 				}
@@ -587,7 +649,7 @@ class FineDiff {
 					$to_copy_start = $to_segment_start;
 					$to_copy_start_max = $to_segment_end - $copy_len;
 					while ( $to_copy_start <= $to_copy_start_max ) {
-						$from_copy_start = strpos(substr($from_text, $from_segment_start, $from_segment_len), substr($to_text, $to_copy_start, $copy_len));
+						$from_copy_start = mb_strpos(mb_substr($from_text, $from_segment_start, $from_segment_len), mb_substr($to_text, $to_copy_start, $copy_len));
 						if ( $from_copy_start !== false ) {
 							$from_copy_start += $from_segment_start;
 							break 2;
@@ -603,7 +665,7 @@ class FineDiff {
 					$from_copy_start = $from_segment_start;
 					$from_copy_start_max = $from_segment_end - $copy_len;
 					while ( $from_copy_start <= $from_copy_start_max ) {
-						$to_copy_start = strpos(substr($to_text, $to_segment_start, $to_segment_len), substr($from_text, $from_copy_start, $copy_len));
+						$to_copy_start = mb_strpos(mb_substr($to_text, $to_segment_start, $to_segment_len), mb_substr($from_text, $from_copy_start, $copy_len));
 						if ( $to_copy_start !== false ) {
 							$to_copy_start += $to_segment_start;
 							break 2;
@@ -621,7 +683,7 @@ class FineDiff {
 				}
 			// no match,  so delete all, insert all
 			else {
-				$result[$from_segment_start * 4] = new FineDiffReplaceOp($from_segment_len, substr($to_text, $to_segment_start, $to_segment_len));
+				$result[$from_segment_start * 4] = new FineDiffReplaceOp($from_segment_len, mb_substr($to_text, $to_segment_start, $to_segment_len));
 				}
 			}
 		ksort($result, SORT_NUMERIC);
@@ -641,19 +703,20 @@ class FineDiff {
 	private static function extractFragments($text, $delimiters) {
 		// special case: split into characters
 		if ( empty($delimiters) ) {
-			$chars = str_split($text, 1);
-			$chars[strlen($text)] = '';
+			$chars = preg_split('/(?<!^)(?!$)/u', $text); // see http://stackoverflow.com/a/26328237/287948
+			// is an UTF8-safe str_split($text, 1);
+			$chars[mb_strlen($text)] = ''; // check if adding, can optimize removing /(?!$)/ from regex
 			return $chars;
 			}
 		$fragments = array();
 		$start = $end = 0;
 		for (;;) {
-			$end += strcspn($text, $delimiters, $end);
-			$end += strspn($text, $delimiters, $end);
+			$end += strcspn($text, $delimiters, $end); // UTF8 safe??
+			$end += strspn($text, $delimiters, $end);  // UTF8 safe??
 			if ( $end === $start ) {
 				break;
 				}
-			$fragments[$start] = substr($text, $start, $end - $start);
+			$fragments[$start] = mb_substr($text, $start, $end - $start);
 			$start = $end;
 			}
 		$fragments[$start] = '';
@@ -665,23 +728,23 @@ class FineDiff {
 	*/
 	private static function renderToTextFromOpcode($opcode, $from, $from_offset, $from_len) {
 		if ( $opcode === 'c' || $opcode === 'i' ) {
-			echo substr($from, $from_offset, $from_len);
+			echo mb_substr($from, $from_offset, $from_len);
 			}
 		}
 
 	private static function renderDiffToHTMLFromOpcode($opcode, $from, $from_offset, $from_len) {
 		if ( $opcode === 'c' ) {
-			echo htmlentities(substr($from, $from_offset, $from_len));
+			echo htmlentities(mb_substr($from, $from_offset, $from_len));
 			}
 		else if ( $opcode === 'd' ) {
-			$deletion = substr($from, $from_offset, $from_len);
+			$deletion = mb_substr($from, $from_offset, $from_len);
 			if ( strcspn($deletion, " \n\r") === 0 ) {
 				$deletion = str_replace(array("\n","\r"), array('\n','\r'), $deletion);
 				}
 			echo '<del>', htmlentities($deletion), '</del>';
 			}
 		else /* if ( $opcode === 'i' ) */ {
- 			echo '<ins>', htmlentities(substr($from, $from_offset, $from_len)), '</ins>';
+ 			echo '<ins>', htmlentities(mb_substr($from, $from_offset, $from_len)), '</ins>';
 			}
 		}
 	}
